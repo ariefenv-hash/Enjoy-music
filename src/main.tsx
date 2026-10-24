@@ -1,10 +1,14 @@
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { Playback } from './core/player'
+import { registerSW } from 'virtual:pwa-register'
 import './styles/base.css'
 import './styles/md3.css'
 import './styles/layout.css'
 import { applyTheme } from './theme'
+
+// PWA Service Worker（autoUpdate：新版本下次导航自动接管，旧缓存自动清理）
+registerSW({ immediate: true })
 
 // 渲染前同步恢复主题（配合 index.html 的 data-* 预设，避免闪烁）
 try {

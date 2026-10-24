@@ -7,6 +7,7 @@ import { Transform, type TransformCallback } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Connect, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // IPv4 优先（规避 IPv6 黑洞导致的连接超时）
 dns.setDefaultResultOrder('ipv4first')
@@ -602,7 +603,60 @@ export default defineConfig({
   // GitHub Pages 项目页构建：PAGES_BASE=/Enjoy-music/ vite build
   // 资源/worker/ort 全部指向 /Enjoy-music/ 子路径；默认 '/' 不影响 dev/preview
   base: process.env.PAGES_BASE || '/',
-  plugins: [react(), ortStatic(), hfProxy()],
+  plugins: [
+    react(),
+    ortStatic(),
+    hfProxy(),
+    VitePWA({
+      // autoUpdate：新版本 SW 在下次导航自动接管，旧缓存自动清理
+      registerType: 'autoUpdate',
+      includeAssets: [
+        'demo/demo.mp3',
+        'demo/demo.elrc',
+        'icons/pwa-192.png',
+        'icons/pwa-512.png',
+        'icons/pwa-maskable-512.png',
+      ],
+      manifest: {
+        name: '逐字歌词工坊 · MD3 Karaoke',
+        short_name: '歌词工坊',
+        description: '上传歌曲，浏览器本地 AI 分析逐字歌词，MD3 卡拉OK逐字跟随',
+        lang: 'zh-CN',
+        display: 'standalone',
+        start_url: '.',
+        scope: '.',
+        background_color: '#141218',
+        theme_color: '#141218',
+        icons: [
+          { src: 'icons/pwa-192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icons/pwa-512.png', sizes: '512x512', type: 'image/png' },
+          { src: 'icons/pwa-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+      workbox: {
+        // 仅预缓存应用壳（hashed assets + index.html + 小体积演示资源）；
+        // 大 wasm / 模型权重不进预缓存：wasm 走运行时 CacheFirst，权重由 transformers.js 自管 Cache
+        globPatterns: ['assets/*.{js,css}', 'index.html'],
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+        navigateFallback: 'index.html',
+        navigateFallbackDenylist: [/hf\//],
+        cleanupOutdatedCaches: true,
+        runtimeCaching: [
+          {
+            // ORT wasm：首次使用后 CacheFirst（含 Range 请求支持），离线可用
+            urlPattern: /\/(ort|assets)\/[^/]+\.wasm$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'ort-wasm',
+              expiration: { maxEntries: 8, purgeOnQuotaError: true },
+              cacheableResponse: { statuses: [200] },
+              rangeRequests: true,
+            },
+          },
+        ],
+      },
+    }),
+  ],
   server: {
     host: '0.0.0.0',
     port: 3000,

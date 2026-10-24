@@ -11,7 +11,15 @@
 - **粤语支持**：高质量档建议 + 自定义模型 ID 入口（微调粤语 ONNX 模型）+ 人声增强（HPSS 抑制伴奏）+ 强制对齐三重保障
 - **提速**：16kHz 单声道直通、能量 VAD 跳过间奏、分段独立转写、量化模型（q4/q8）、模型双重持久缓存
 - **MD3 主题**：明暗两套令牌；支持**上传壁纸自动取色**——Material You 同源算法（QuantizerCelebi + Score）提取 3 种视觉统一的颜色混搭成套主题
+- **PWA**：可安装到桌面 / 主屏幕；Service Worker 预缓存应用壳与演示资源，**断网也能打开并播放演示曲**；ORT wasm 首次使用后永久缓存，模型权重由 transformers.js Cache 持久化——离线分析二次可用
 - **导出**：分析结果一键导出增强 LRC（词级 `<mm:ss.xx>` 标签）
+
+## 镜像稳定性（/hf 代理）
+
+- **上游故障转移链**：hf-mirror → huggingface.co，网络级故障自动熔断 30s 并切换（`HF_UPSTREAMS` 环境变量可覆盖，支持 http: 自定义镜像）
+- **限流退避**：429/503/5xx 优先读 `Retry-After`，否则指数退避 + 抖动；429 触发全局冷却防重试风暴
+- **断流续传**：长下载停顿检测（默认 45s，`HF_STALL_MS` 可调）→ 从已收字节 `Range + If-Range` 无缝拼接续传，客户端与磁盘缓存均无感知（次数上限 `HF_MAX_SPLICES`）
+- **并发控制**：上游请求信号量限流（默认 6），降低触发风控概率；响应头 `x-hf-upstream` 可查实际使用上游
 
 ## 模型持久化
 
@@ -29,6 +37,7 @@
 - workflow：`.github/workflows/pages.yml`（bun install → `build:pages`（base=/Enjoy-music/）→ deploy-pages）
 - 首次启用：仓库 Settings → Pages → Source 选 **GitHub Actions**（或由 API `build_type=workflow` 自动开启）
 - ORT wasm 与演示资源位于 `public/`，构建时随 `dist/` 一起发布，子路径下开箱即用
+- 安装到桌面 / 手机：浏览器地址栏「安装」按钮（PWA manifest + Service Worker 自动生效）
 
 ## 开发
 
