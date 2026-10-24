@@ -1,0 +1,472 @@
+/* ============ MD3 组件样式（手写实现 M3 规范） ============ */
+
+/* ---------- 按钮 ---------- */
+.m-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 22px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, transform 0.15s ease, background 0.2s ease;
+  user-select: none;
+}
+.m-btn:active {
+  transform: scale(0.97);
+}
+.m-btn:disabled {
+  opacity: 0.38;
+  pointer-events: none;
+}
+/* 状态层 */
+.m-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.m-btn:hover::after {
+  opacity: 0.08;
+}
+.m-btn:active::after {
+  opacity: 0.12;
+}
+.m-btn--filled {
+  background: var(--md-primary);
+  color: var(--md-onPrimary);
+}
+.m-btn--filled:hover {
+  box-shadow: 0 1px 3px 1px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.m-btn--tonal {
+  background: var(--md-secondaryContainer);
+  color: var(--md-onSecondaryContainer);
+}
+.m-btn--text {
+  padding: 0 14px;
+  color: var(--md-primary);
+}
+.m-btn--outlined {
+  border: 1px solid var(--md-outline);
+  color: var(--md-primary);
+  background: transparent;
+}
+.m-btn--large {
+  height: 48px;
+  border-radius: 24px;
+  padding: 0 26px;
+  font-size: 15px;
+}
+
+/* 图标按钮 */
+.m-icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: var(--md-onSurfaceVariant);
+  overflow: hidden;
+  flex-shrink: 0;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease;
+}
+.m-icon-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.m-icon-btn:hover::after {
+  opacity: 0.1;
+}
+.m-icon-btn:active::after {
+  opacity: 0.16;
+}
+.m-icon-btn:active {
+  transform: scale(0.94);
+}
+.m-icon-btn.is-active {
+  color: var(--md-primary);
+  background: var(--md-secondaryContainer);
+}
+.m-icon-btn--tonal {
+  background: var(--md-secondaryContainer);
+  color: var(--md-onSecondaryContainer);
+}
+
+/* FAB 风格大播放键 */
+.m-fab {
+  width: 62px;
+  height: 62px;
+  border-radius: 20px;
+  background: var(--md-primaryContainer);
+  color: var(--md-onPrimaryContainer);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 6px 1px rgba(0, 0, 0, 0.15);
+  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1), box-shadow 0.2s ease, border-radius 0.25s ease;
+}
+.m-fab:hover {
+  box-shadow: 0 5px 10px 2px rgba(0, 0, 0, 0.2);
+}
+.m-fab:active {
+  transform: scale(0.93);
+  border-radius: 50%;
+}
+
+/* ---------- 分段按钮 ---------- */
+.m-seg {
+  display: inline-flex;
+  border: 1px solid var(--md-outline);
+  border-radius: 20px;
+  overflow: hidden;
+  height: 38px;
+}
+.m-seg__opt {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--md-onSurface);
+  border-right: 1px solid var(--md-outline);
+  transition: background 0.2s ease, color 0.2s ease;
+  white-space: nowrap;
+}
+.m-seg__opt:last-child {
+  border-right: none;
+}
+.m-seg__opt:hover {
+  background: color-mix(in srgb, var(--md-onSurface) 6%, transparent);
+}
+.m-seg__opt.is-on {
+  background: var(--md-secondaryContainer);
+  color: var(--md-onSecondaryContainer);
+}
+.m-seg__opt .m-seg__dot {
+  display: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--md-primary);
+}
+.m-seg__opt.is-on .m-seg__dot {
+  display: inline-block;
+}
+.m-seg--full {
+  display: flex;
+  width: 100%;
+}
+.m-seg--full .m-seg__opt {
+  flex: 1;
+  justify-content: center;
+}
+
+/* ---------- 开关 ---------- */
+.m-switch {
+  position: relative;
+  width: 52px;
+  height: 32px;
+  border-radius: 16px;
+  background: var(--md-surfaceContainerHighest);
+  border: 2px solid var(--md-outline);
+  transition: background 0.2s ease, border-color 0.2s ease;
+  flex-shrink: 0;
+}
+.m-switch::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--md-outline);
+  transform: translateY(-50%);
+  transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.m-switch.is-on {
+  background: var(--md-primary);
+  border-color: var(--md-primary);
+}
+.m-switch.is-on::after {
+  left: 24px;
+  width: 24px;
+  height: 24px;
+  background: var(--md-onPrimary);
+}
+
+/* ---------- 滑块 ---------- */
+.m-slider {
+  position: relative;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  flex: 1;
+  min-width: 80px;
+}
+.m-slider__track {
+  position: relative;
+  width: 100%;
+  height: 16px;
+  display: flex;
+  align-items: center;
+}
+.m-slider__track::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--md-surfaceContainerHighest);
+}
+.m-slider__fill {
+  position: absolute;
+  left: 0;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--md-primary);
+  will-change: width;
+}
+.m-slider__handle {
+  position: absolute;
+  width: 4px;
+  height: 26px;
+  border-radius: 2px;
+  background: var(--md-primary);
+  transform: translateX(-50%);
+  transition: height 0.15s ease, width 0.15s ease;
+  will-change: left;
+}
+.m-slider:hover .m-slider__handle,
+.m-slider.is-dragging .m-slider__handle {
+  width: 6px;
+  height: 34px;
+  border-radius: 3px;
+}
+
+/* ---------- Chip ---------- */
+.m-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--md-outlineVariant);
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--md-onSurfaceVariant);
+  white-space: nowrap;
+}
+.m-chip--tonal {
+  background: var(--md-secondaryContainer);
+  color: var(--md-onSecondaryContainer);
+  border-color: transparent;
+}
+.m-chip--primary {
+  background: var(--md-primaryContainer);
+  color: var(--md-onPrimaryContainer);
+  border-color: transparent;
+}
+.m-chip--click {
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.m-chip--click:hover {
+  background: color-mix(in srgb, var(--md-onSurface) 8%, transparent);
+}
+
+/* ---------- 卡片 ---------- */
+.m-card {
+  background: var(--md-surfaceContainerLow);
+  border-radius: 24px;
+  padding: 22px;
+}
+.m-card--high {
+  background: var(--md-surfaceContainerHigh);
+}
+.m-card--outlined {
+  background: transparent;
+  border: 1px solid var(--md-outlineVariant);
+}
+
+/* ---------- 线性进度 ---------- */
+.m-progress {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--md-surfaceContainerHighest);
+  overflow: hidden;
+}
+.m-progress__bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--md-primary);
+  transition: width 0.25s ease;
+}
+.m-progress--indeterminate .m-progress__bar {
+  width: 36% !important;
+  animation: m-indet 1.15s ease-in-out infinite;
+}
+@keyframes m-indet {
+  0% {
+    left: -36%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+/* ---------- 底部抽屉 ---------- */
+.m-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--md-scrim);
+  opacity: 0.45;
+  z-index: 60;
+  animation: m-fade 0.2s ease;
+}
+.m-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 61;
+  background: var(--md-surfaceContainerLow);
+  border-radius: 28px 28px 0 0;
+  max-height: 82vh;
+  overflow-y: auto;
+  padding: 8px 24px calc(28px + env(safe-area-inset-bottom, 0px));
+  animation: m-slide-up 0.32s cubic-bezier(0.05, 0.7, 0.1, 1);
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.25);
+}
+.m-sheet__handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--md-outlineVariant);
+  margin: 10px auto 14px;
+}
+@keyframes m-slide-up {
+  from {
+    transform: translateY(60%);
+    opacity: 0.4;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes m-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.45;
+  }
+}
+
+/* ---------- 文本输入 ---------- */
+.m-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.m-field__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--md-onSurfaceVariant);
+  letter-spacing: 0.3px;
+}
+.m-field input,
+.m-field select,
+.m-field textarea {
+  height: 46px;
+  border-radius: 12px;
+  border: 1px solid var(--md-outlineVariant);
+  background: color-mix(in srgb, var(--md-surfaceContainerHighest) 45%, transparent);
+  padding: 0 14px;
+  outline: none;
+  font-size: 14px;
+  transition: border-color 0.2s ease;
+  width: 100%;
+}
+.m-field textarea {
+  height: auto;
+  padding: 12px 14px;
+  resize: vertical;
+  line-height: 1.6;
+}
+.m-field input:focus,
+.m-field select:focus,
+.m-field textarea:focus {
+  border-color: var(--md-primary);
+  border-width: 2px;
+}
+
+/* ---------- 对话框 ---------- */
+.m-dialog-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--md-scrim);
+  opacity: 0.5;
+  z-index: 70;
+  animation: m-fade 0.2s ease;
+}
+.m-dialog {
+  position: fixed;
+  z-index: 71;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: 82vh;
+  overflow-y: auto;
+  background: var(--md-surfaceContainerHigh);
+  border-radius: 28px;
+  padding: 24px;
+  animation: m-pop 0.25s cubic-bezier(0.05, 0.7, 0.1, 1);
+}
+@keyframes m-pop {
+  from {
+    transform: translate(-50%, -50%) scale(0.92);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+}
+
+/* ---------- 旋转指示 ---------- */
+.m-spin {
+  animation: m-rotate 1s linear infinite;
+}
+@keyframes m-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}

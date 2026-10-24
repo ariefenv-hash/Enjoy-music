@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN" data-mode="dark" data-seed="violet">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#141218" />
+    <title>逐字歌词工坊 · MD3 Karaoke</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23D0BCFF' d='M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z'/%3E%3C/svg%3E" />
+    <script>
+      // 首屏前恢复主题，避免闪白
+      try {
+        const s = JSON.parse(localStorage.getItem('md3-karaoke-settings') || '{}')
+        const mode = s.mode === 'light' || s.mode === 'dark' ? s.mode : 'dark'
+        const seed = typeof s.seed === 'string' ? s.seed : 'violet'
+        document.documentElement.dataset.mode = mode
+        document.documentElement.dataset.seed = seed
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
