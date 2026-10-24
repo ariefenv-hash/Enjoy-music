@@ -11,8 +11,9 @@ env.allowLocalModels = false
 const onnxEnv = (env as any).backends?.onnx
 if (onnxEnv?.wasm) {
   onnxEnv.wasm.proxy = false
-  // ORT wasm 运行时走本地（public/ort），不依赖 jsdelivr CDN
-  onnxEnv.wasm.wasmPaths = '/ort/'
+  // ORT wasm 运行时走本地（public/ort），不依赖 jsdelivr CDN；
+  // BASE_URL 兼容子路径部署（如 GitHub Pages /Enjoy-music/）
+  onnxEnv.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
 }
 
 type AnyPipe = {
@@ -37,12 +38,14 @@ function post(msg: Record<string, unknown>): void {
   ;(self as unknown as Worker).postMessage(msg)
 }
 
-async function ensurePipe(opts: LoadOpts): Promise<{ pipe: AnyPipe; device: 'webgpu' | 'wasm' }> {
-  const key = `${opts.model}|${opts.device}|${JSON.stringify(opts.dtype)}|${opts.mirror}`
-  if (pipe && loadedKey === key) return { pipe: pipe!, device: opts.device }
+const HF_DIRECT = 'https://huggingface.co/'
 
-  // 'mirror' = 走本站 /hf/ 代理（服务端转发 hf-mirror，无 CORS/指纹问题）
-  env.remoteHost = opts.mirror === 'mirror' ? `${(self as unknown as { location: { origin: string } }).location.origin}/hf/` : 'https://huggingface.co/'
+async function ensurePipe(opts: LoadOpts): Promise<{ pipe: AnyPipe; device: 'webgpu' | 'wasm' }> {
+  // 'mirror' = 走本站 /hf/ 代理（服务端转发 hf-mirror，无 CORS/指纹问题）；
+  // GitHub Pages 等纯静态托管没有该代理 → 404 后自动回退直连 huggingface.co
+  const origin = (self as unknown as { location: { origin: string } }).location.origin
+  const host0 = opts.mirror === 'mirror' ? `${origin}/hf/` : HF_DIRECT
+  const hosts = host0 === HF_DIRECT ? [HF_DIRECT] : [host0, HF_DIRECT]
 
   const attempts: { device: 'webgpu' | 'wasm'; dtype: any }[] = [
     { device: opts.device, dtype: opts.dtype },
@@ -55,31 +58,40 @@ async function ensurePipe(opts: LoadOpts): Promise<{ pipe: AnyPipe; device: 'web
       lastErr = new Error('WebGPU 不可用')
       continue
     }
-    try {
-      post({ type: 'status', msg: `加载模型 ${opts.model}（${att.device}）…` })
-      pipe = (await (pipeline as any)('automatic-speech-recognition', opts.model, {
-        device: att.device,
-        dtype: att.dtype,
-        progress_callback: (p: Record<string, unknown>) => {
-          if (p.status === 'progress') {
-            post({
-              type: 'download',
-              file: String(p.file ?? ''),
-              progress: Number(p.progress ?? 0),
-              loaded: Number(p.loaded ?? 0),
-              total: Number(p.total ?? 0),
-            })
-          } else if (p.status === 'done') {
-            post({ type: 'downloadDone', file: String(p.file ?? '') })
-          }
-        },
-      })) as AnyPipe
-      loadedKey = key
-      post({ type: 'device', device: att.device })
-      return { pipe: pipe!, device: att.device }
-    } catch (e) {
-      lastErr = e
-      pipe = null
+    for (const host of hosts) {
+      const key = `${opts.model}|${att.device}|${JSON.stringify(att.dtype)}|${host}`
+      if (pipe && loadedKey === key) return { pipe: pipe!, device: att.device }
+      try {
+        env.remoteHost = host
+        const viaMirror = host !== HF_DIRECT
+        post({ type: 'status', msg: `加载模型 ${opts.model}（${att.device}${viaMirror ? ' · 镜像' : ''}）…` })
+        pipe = (await (pipeline as any)('automatic-speech-recognition', opts.model, {
+          device: att.device,
+          dtype: att.dtype,
+          progress_callback: (p: Record<string, unknown>) => {
+            if (p.status === 'progress') {
+              post({
+                type: 'download',
+                file: String(p.file ?? ''),
+                progress: Number(p.progress ?? 0),
+                loaded: Number(p.loaded ?? 0),
+                total: Number(p.total ?? 0),
+              })
+            } else if (p.status === 'done') {
+              post({ type: 'downloadDone', file: String(p.file ?? '') })
+            }
+          },
+        })) as AnyPipe
+        loadedKey = key
+        post({ type: 'device', device: att.device })
+        return { pipe: pipe!, device: att.device }
+      } catch (e) {
+        lastErr = e
+        pipe = null
+        if (host !== HF_DIRECT) {
+          post({ type: 'status', msg: '镜像源不可用，改用 huggingface.co 直连重试…' })
+        }
+      }
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))

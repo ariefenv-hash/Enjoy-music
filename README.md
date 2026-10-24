@@ -20,6 +20,16 @@
 1. **浏览器 Cache API** 缓存（同会话零下载）
 2. **服务器磁盘缓存** `.hf-cache/`（dev 与 preview 同享）——预览环境清空浏览器缓存后，权重仍从本地磁盘秒出，不会重新从 hf-mirror 拉取
 
+> 部署到 GitHub Pages 等纯静态托管（无 `/hf/` 代理）时，镜像源 404 会自动回退 `huggingface.co` 直连，无需配置。
+
+## 在线访问（GitHub Pages）
+
+推送到 `main` 后自动构建部署：**https://ariefenv-hash.github.io/Enjoy-music/**
+
+- workflow：`.github/workflows/pages.yml`（bun install → `build:pages`（base=/Enjoy-music/）→ deploy-pages）
+- 首次启用：仓库 Settings → Pages → Source 选 **GitHub Actions**（或由 API `build_type=workflow` 自动开启）
+- ORT wasm 与演示资源位于 `public/`，构建时随 `dist/` 一起发布，子路径下开箱即用
+
 ## 开发
 
 ```bash

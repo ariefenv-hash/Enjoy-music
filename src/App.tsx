@@ -141,9 +141,11 @@ export default function App() {
   const loadDemo = async () => {
     try {
       setError(null)
+      // BASE_URL 兼容子路径部署（如 GitHub Pages /Enjoy-music/）
+      const base = import.meta.env.BASE_URL
       const [mp3, lrcText] = await Promise.all([
-        fetch('/demo/demo.mp3').then((r) => r.blob()),
-        fetch('/demo/demo.elrc').then((r) => r.text()),
+        fetch(`${base}demo/demo.mp3`).then((r) => r.blob()),
+        fetch(`${base}demo/demo.elrc`).then((r) => r.text()),
       ])
       const lines = parseLyricsFile(lrcText).map((l, i) => ({ ...l, index: i }))
       await handlePickAudio(new File([mp3], 'demo.mp3', { type: 'audio/mpeg' }))

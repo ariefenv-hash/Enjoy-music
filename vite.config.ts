@@ -317,13 +317,18 @@ async function proxyHandler(req: Connect.IncomingMessage, res: Connect.ServerRes
 }
 
 function hfProxy(): Plugin {
+  // 子路径 preview（PAGES_BASE=/Enjoy-music/）时，请求带 base 前缀：
+  // 额外挂一份 '<base>/hf' 保证 preview:pages 下镜像代理仍可用
+  const BASE = process.env.PAGES_BASE || '/'
   return {
     name: 'hf-model-proxy',
     configureServer(server) {
       server.middlewares.use('/hf', (req, res) => void proxyHandler(req, res))
+      if (BASE !== '/') server.middlewares.use(`${BASE.replace(/\/+$/, '')}/hf`, (req, res) => void proxyHandler(req, res))
     },
     configurePreviewServer(server) {
       server.middlewares.use('/hf', (req, res) => void proxyHandler(req, res))
+      if (BASE !== '/') server.middlewares.use(`${BASE.replace(/\/+$/, '')}/hf`, (req, res) => void proxyHandler(req, res))
     },
   }
 }
@@ -366,6 +371,9 @@ function ortStatic(): Plugin {
  * 这里放开 allowedHosts（dev 与 preview 都要配），开发/预览环境可接受。
  */
 export default defineConfig({
+  // GitHub Pages 项目页构建：PAGES_BASE=/Enjoy-music/ vite build
+  // 资源/worker/ort 全部指向 /Enjoy-music/ 子路径；默认 '/' 不影响 dev/preview
+  base: process.env.PAGES_BASE || '/',
   plugins: [react(), ortStatic(), hfProxy()],
   server: {
     host: '0.0.0.0',
