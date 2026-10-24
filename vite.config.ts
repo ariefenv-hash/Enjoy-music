@@ -1,7 +1,9 @@
 import dns from 'node:dns'
 import fs from 'node:fs'
+import http from 'node:http'
 import https from 'node:https'
 import path from 'node:path'
+import { Transform, type TransformCallback } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Connect, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -22,9 +24,75 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url))
  * 该带 query 的地址会无限挂起 —— 剥掉 query 的干净地址秒通（其它带签名的
  * 重定向保留 query 原样跟随）。
  */
-const UPSTREAM = 'https://hf-mirror.com'
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * 上游链与稳定性：
+ *  - 默认 hf-mirror（大陆可达）→ huggingface.co（国际兜底），前者连续故障/限流自动切换；
+ *    环境变量 HF_UPSTREAMS 覆盖（逗号分隔），便于测试与自定义。
+ *  - 429/503/5xx：优先 Retry-After，否则指数退避 + 抖动；429 另设全局冷却防重试风暴。
+ *  - 网络级故障：该上游熔断 30s，立即换下一家。
+ *  - 上游并发上限 MAX_CONCURRENCY（信号量），降低触发风控的概率。
+ *  - 长下载停顿检测（HF_STALL_MS，默认 45s）：从已收字节用 Range+If-Range 无缝续传拼接，
+ *    对客户端与磁盘缓存均无感知；次数上限 HF_MAX_SPLICES（默认 2）。
+ */
+const UPSTREAMS = (process.env.HF_UPSTREAMS ?? 'https://hf-mirror.com,https://huggingface.co')
+  .split(',')
+  .map((s) => s.trim().replace(/\/+$/, ''))
+  .filter(Boolean)
+
+const UPSTREAM_TIMEOUT_MS = 20_000
+const STALL_TIMEOUT_MS = Number(process.env.HF_STALL_MS ?? 45_000)
+const MAX_SPLICES = Number(process.env.HF_MAX_SPLICES ?? 2)
+const MAX_CONCURRENCY = 6
+
+interface UpstreamHealth {
+  failures: number
+  cooldownUntil: number
+}
+const health = new Map<string, UpstreamHealth>()
+const hOf = (u: string): UpstreamHealth => {
+  let h = health.get(u)
+  if (!h) {
+    h = { failures: 0, cooldownUntil: 0 }
+    health.set(u, h)
+  }
+  return h
+}
+
+/** 429 全局冷却：任一上游限流时，所有新上游请求先等冷却结束（防重试风暴） */
+let globalCooldownUntil = 0
+
+class Semaphore {
+  private active = 0
+  private waiters: (() => void)[] = []
+  async acquire(): Promise<() => void> {
+    if (this.active >= MAX_CONCURRENCY) await new Promise<void>((r) => this.waiters.push(r))
+    this.active++
+    let done = false
+    return () => {
+      if (done) return
+      done = true
+      this.active--
+      this.waiters.shift()?.()
+    }
+  }
+}
+const upstreamSem = new Semaphore(MAX_CONCURRENCY)
+
+/** 可用上游优先（保持配置顺序），全部熔断时按冷却结束时间排序兜底 */
+function pickUpstreams(): string[] {
+  const now = Date.now()
+  const ok = UPSTREAMS.filter((u) => hOf(u).cooldownUntil <= now)
+  const down = UPSTREAMS.filter((u) => hOf(u).cooldownUntil > now)
+  return [...ok, ...down.sort((a, b) => hOf(a).cooldownUntil - hOf(b).cooldownUntil)]
+}
+
+function backoffMs(res: { headers: Record<string, string | string[] | undefined> }, attempt: number): number {
+  const ra = Number(res.headers['retry-after'])
+  if (Number.isFinite(ra) && ra > 0) return Math.min(ra * 1000, 30_000)
+  return Math.min(1500 * 2 ** attempt + Math.random() * 500, 15_000)
+}
 
 interface UpstreamResponse {
   status: number
@@ -42,9 +110,10 @@ interface UpstreamResponse {
 function httpsGetOnce(url: string, headers: Record<string, string>, depth = 0): Promise<UpstreamResponse> {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
-    const req = https.request(
+    const mod = u.protocol === 'http:' ? http : https
+    const req = mod.request(
       u,
-      { headers, family: 4, timeout: 20000, method: 'GET' },
+      { headers, family: 4, timeout: UPSTREAM_TIMEOUT_MS, method: 'GET' },
       (res) => {
         const sc = res.statusCode ?? 0
         if (sc >= 300 && sc < 400 && res.headers.location && depth < 5) {
@@ -63,20 +132,57 @@ function httpsGetOnce(url: string, headers: Record<string, string>, depth = 0): 
   })
 }
 
-async function upstreamFetch(path: string, req: Connect.IncomingMessage): Promise<UpstreamResponse> {
+function buildUpstreamHeaders(req: Connect.IncomingMessage): Record<string, string> {
   const headers: Record<string, string> = {}
   if (req.headers.range) headers.Range = String(req.headers.range)
   if (req.headers['if-none-match']) headers['If-None-Match'] = String(req.headers['if-none-match'])
   headers['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36'
   headers.Accept = '*/*'
+  return headers
+}
 
+interface UpstreamResult extends UpstreamResponse {
+  base: string
+}
+
+/**
+ * 上游请求（header 阶段）：逐家上游 × 各 2 次尝试。
+ *  - 429/503/5xx：Retry-After 优先，否则指数退避+抖动；429 设全局冷却；同上游内退避重试
+ *  - 网络级故障（连接超时/拒绝）：该上游熔断 30s，立即切换下一家
+ *  - 4xx 语义错误（404/403 等）：不重试不转移，直接返回给客户端
+ */
+async function fetchWithFailover(path: string, headers: Record<string, string>, ctx: string): Promise<UpstreamResult> {
   let lastErr: unknown
-  for (let i = 0; i < 4; i++) {
-    try {
-      return await httpsGetOnce(UPSTREAM + path, headers)
-    } catch (e) {
-      lastErr = e
-      await sleep(1500 * (i + 1))
+  for (const base of pickUpstreams()) {
+    for (let i = 0; i < 3; i++) {
+      const wait = globalCooldownUntil - Date.now()
+      if (wait > 0) await sleep(wait)
+      try {
+        const res = await httpsGetOnce(base + path, headers)
+        if (res.status === 429 || res.status === 503 || res.status >= 500) {
+          res.stream?.destroy()
+          const ms = backoffMs(res, i)
+          const h = hOf(base)
+          h.failures++
+          h.cooldownUntil = Date.now() + Math.min(ms, 30_000)
+          if (res.status === 429) globalCooldownUntil = Date.now() + Math.min(ms, 30_000)
+          console.warn(`[hf] ${res.status} @ ${base}${path} → 退避 ${(ms / 1000).toFixed(1)}s (${ctx})`)
+          lastErr = new Error(`${res.status} from ${base}`)
+          await sleep(ms)
+          continue
+        }
+        const h = hOf(base)
+        h.failures = 0
+        h.cooldownUntil = 0
+        return { ...res, base }
+      } catch (e) {
+        lastErr = e
+        const h = hOf(base)
+        h.failures++
+        h.cooldownUntil = Date.now() + 30_000
+        console.warn(`[hf] ${base} 网络错误：${e instanceof Error ? e.message : e} → 熔断 30s，切换上游 (${ctx})`)
+        break
+      }
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
@@ -195,58 +301,164 @@ function serveFromDisk(
   fs.createReadStream(file).pipe(res)
 }
 
-/** 写盘：tmp 文件 → 原子 rename，失败/中断不落半截文件 */
-function teeToDisk(upstream: UpstreamResponse, rel: string, res: Connect.ServerResponse): void {
-  const file = path.join(HF_CACHE_DIR, rel)
-  if (!file.startsWith(HF_CACHE_DIR + path.sep)) return
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-  } catch (e) {
-    console.warn(`[hf] mkdir failed for ${rel}: ${e instanceof Error ? e.message : e}`)
-    return
+class ByteCounter extends Transform {
+  bytes = 0
+  _transform(chunk: Buffer, _enc: BufferEncoding, cb: TransformCallback): void {
+    this.bytes += chunk.length
+    cb(null, chunk)
   }
-  const tmp = `${file}.part-${Date.now().toString(36)}`
-  const ws = fs.createWriteStream(tmp)
-  let ok = true
-  const cleanup = (): void => {
-    if (!ok) return
-    ok = false
+}
+
+/** 上游流停顿看门狗：STALL_TIMEOUT_MS 无数据 → 销毁流触发续传；正常 end 返回 true */
+function pumpWithStallWatch(src: import('node:stream').Readable): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const done = (ok: boolean): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(ok)
+    }
+    const reset = (): void => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => src.destroy(new Error(`stall >${STALL_TIMEOUT_MS}ms`)), STALL_TIMEOUT_MS)
+      ;(timer as unknown as { unref?: () => void }).unref?.()
+    }
+    src.on('data', reset)
+    src.on('end', () => done(true))
+    src.on('error', () => done(false))
+    src.on('close', () => done(false))
+    reset()
+  })
+}
+
+/**
+ * 200 全量下载泵送：上游流 → 字节计数 → 客户端 + 磁盘缓存（tee）。
+ * 停顿/断流时从已收字节数发起 Range+If-Range 续传，向同一响应/缓存文件无缝拼接，
+ * 客户端与磁盘缓存均无感知；最多 MAX_SPLICES 次，无法续传则放弃并清理半截文件。
+ */
+async function teeWithResume(
+  first: UpstreamResult,
+  upPath: string,
+  headers: Record<string, string>,
+  rel: string,
+  res: Connect.ServerResponse,
+): Promise<void> {
+  const file = path.join(HF_CACHE_DIR, rel)
+  const cacheable = file.startsWith(HF_CACHE_DIR + path.sep)
+  const tmp = cacheable ? `${file}.part-${Date.now().toString(36)}` : ''
+  if (cacheable) {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+    } catch (e) {
+      console.warn(`[hf] mkdir failed for ${rel}: ${e instanceof Error ? e.message : e}`)
+      first.stream!.pipe(res)
+      return
+    }
+  }
+
+  const ws = tmp ? fs.createWriteStream(tmp) : null
+  const counter = new ByteCounter()
+  counter.on('error', () => {})
+  first.stream!.pipe(counter)
+  counter.pipe(res)
+  if (ws) counter.pipe(ws, { end: false })
+
+  const etag = (first.headers.etag as string) ?? null
+  const total = Number(first.headers['content-length'] ?? 0)
+
+  let finalized = false
+  const cleanupTmp = (): void => {
+    if (!tmp) return
     try {
       fs.unlinkSync(tmp)
     } catch {}
   }
-  ws.on('error', cleanup)
-  upstream.stream!.on('error', () => {
-    cleanup()
-    res.destroy()
-  })
-  upstream.stream!.pipe(res)
-  upstream.stream!.pipe(ws)
-  upstream.stream!.on('end', () => {
-    ws.end(() => {
-      if (!ok) return
+
+  const finalize = (): void => {
+    if (finalized) return
+    finalized = true
+    counter.end()
+    ws?.end(() => {
       try {
         if (dirSize(HF_CACHE_DIR) > HF_CACHE_MAX_BYTES) {
-          cleanup()
+          cleanupTmp()
           console.log('[hf] cache skipped (over 4GB soft cap)')
           return
         }
         fs.renameSync(tmp, file)
         const meta: DiskMeta = {
-          etag: (upstream.headers.etag as string) ?? null,
-          contentType: (upstream.headers['content-type'] as string) ?? null,
-          contentLength: Number(upstream.headers['content-length'] ?? 0),
-          lastModified: (upstream.headers['last-modified'] as string) ?? null,
-          cacheControl: (upstream.headers['cache-control'] as string) ?? null,
+          etag,
+          contentType: (first.headers['content-type'] as string) ?? null,
+          contentLength: total,
+          lastModified: (first.headers['last-modified'] as string) ?? null,
+          cacheControl: (first.headers['cache-control'] as string) ?? null,
           size: fs.statSync(file).size,
         }
         fs.writeFileSync(file + '.meta.json', JSON.stringify(meta))
         console.log(`[hf] cached ${rel} (${(meta.size / 1048576).toFixed(1)} MB)`)
       } catch {
-        cleanup()
+        cleanupTmp()
       }
     })
+  }
+
+  const abort = (): void => {
+    if (finalized) return
+    finalized = true
+    src.destroy()
+    counter.end()
+    ws?.end()
+    cleanupTmp()
+    res.destroy()
+  }
+  ws?.on('error', (e) => {
+    console.warn(`[hf] cache write error: ${e.message}`)
+    abort()
   })
+
+  // 客户端中途断开：终止下载并清理半截文件
+  res.on('close', () => {
+    if (!finalized && !res.writableFinished) abort()
+  })
+
+  let src = first.stream!
+  for (let splice = 0; ; ) {
+    const ok = await pumpWithStallWatch(src)
+    if (ok) {
+      finalize()
+      return
+    }
+    const written = counter.bytes
+    const canResume =
+      !finalized && splice < MAX_SPLICES && written > 0 && (total === 0 || written < total) && !res.writableEnded
+    if (!canResume) {
+      abort()
+      return
+    }
+    splice++
+    console.warn(`[hf] 断流 @ ${written}/${total || '?'}B → 续传 #${splice} (${rel})`)
+    try {
+      const r2 = await fetchWithFailover(
+        upPath,
+        { ...headers, Range: `bytes=${written}-`, ...(etag ? { 'If-Range': etag } : {}) },
+        rel,
+      )
+      const cr = String(r2.headers['content-range'] ?? '')
+      if (r2.status === 206 && r2.stream && cr.startsWith(`bytes ${written}-`)) {
+        src = r2.stream
+        src.pipe(counter)
+        continue
+      }
+      // If-Range 校验失败返回 200 全量（文件已变）等：无法续传
+      r2.stream?.destroy()
+    } catch {
+      /* 续传请求失败 → 放弃 */
+    }
+    abort()
+    return
+  }
 }
 
 /** 同一文件的并发请求合并：等首个下载落盘后直接从磁盘回源 */
@@ -275,18 +487,29 @@ async function proxyHandler(req: Connect.IncomingMessage, res: Connect.ServerRes
       }
     }
 
-    const upstream = await upstreamFetch(rawUrl, req)
+    const headers = buildUpstreamHeaders(req)
+    const release = await upstreamSem.acquire()
+    let upstream: UpstreamResult
+    try {
+      upstream = await fetchWithFailover(rawUrl, headers, rel ?? rawUrl)
+    } catch (e) {
+      release()
+      throw e
+    }
+
     const out: Record<string, string> = {
       'access-control-allow-origin': '*',
       'cache-control': (upstream.headers['cache-control'] as string) ?? 'public, max-age=3600',
+      'x-hf-upstream': upstream.base.replace(/^https?:\/\//, ''),
     }
     for (const k of PASS_HEADERS) {
       const v = upstream.headers[k]
       if (v) out[k] = Array.isArray(v) ? v.join(', ') : v
     }
 
-    // HEAD / 无 body / 非 200 / Range 请求：直通，不落盘
+    // HEAD / 无 body / 非 200 / 客户端带 Range：直通，不落盘
     if (req.method === 'HEAD' || !upstream.stream || upstream.status !== 200 || req.headers.range) {
+      release()
       res.writeHead(upstream.status, out)
       res.end()
       // 修复：HEAD 直通时上游流不再消费，必须销毁防止 socket 泄漏
@@ -294,25 +517,30 @@ async function proxyHandler(req: Connect.IncomingMessage, res: Connect.ServerRes
       return
     }
 
-    console.log(`[hf] MISS ${rel ?? rawUrl}`)
+    console.log(`[hf] MISS ${rel ?? rawUrl} (via ${out['x-hf-upstream']})`)
     if (rel && inflight.has(rel)) {
       // 理论不可达（上方已 await），防御性兜底
+      release()
       upstream.stream.pipe(res)
       return
     }
     // 先写响应头（content-length/etag 等），否则 pipe 走 chunked，下载进度无从计算
     res.writeHead(upstream.status, out)
-    const task = new Promise<void>((resolve) => {
-      teeToDisk(upstream, rel!, res)
-      upstream.stream!.on('close', resolve)
-    })
+    const task = teeWithResume(upstream, rawUrl, headers, rel!, res).finally(release)
+    // 泵送阶段错误已在内部处置/日志，这里兜底防 unhandled rejection 杀进程
+    task.catch(() => {})
     if (rel) {
       inflight.set(rel, task)
       task.finally(() => inflight.delete(rel))
     }
   } catch (e) {
-    res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
-    res.end(`hf proxy error: ${e instanceof Error ? e.message : String(e)}`)
+    console.warn(`[hf] proxy error: ${e instanceof Error ? e.message : String(e)}`)
+    if (!res.headersSent) {
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end(`hf proxy error: ${e instanceof Error ? e.message : String(e)}`)
+    } else {
+      res.destroy()
+    }
   }
 }
 
