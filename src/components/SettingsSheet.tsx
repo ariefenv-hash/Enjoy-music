@@ -172,12 +172,15 @@ export function SettingsSheet({ open, settings, onChange, onClose, webgpuAvailab
             <span className="m-field__label">模型下载源</span>
             <div className="m-seg m-seg--full">
               <button className={`m-seg__opt ${settings.mirror === 'mirror' ? 'is-on' : ''}`} onClick={() => onChange({ mirror: 'mirror' })}>
-                <span className="m-seg__dot" /> 服务器代理（推荐）
+                <span className="m-seg__dot" /> 镜像源（自动回退）
               </button>
               <button className={`m-seg__opt ${settings.mirror === 'hf' ? 'is-on' : ''}`} onClick={() => onChange({ mirror: 'hf' })}>
                 <span className="m-seg__dot" /> 直连 HuggingFace
               </button>
             </div>
+            <span style={{ display: 'block', fontSize: 12, opacity: 0.6, marginTop: 4 }}>
+              可用性自动探测：镜像源 = 本站代理 → hf-mirror.com → huggingface.co；直连失败也会回退 hf-mirror.com
+            </span>
           </div>
 
           <div className="opt-row" style={{ marginTop: 6 }}>

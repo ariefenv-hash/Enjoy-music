@@ -39,61 +39,159 @@ function post(msg: Record<string, unknown>): void {
 }
 
 const HF_DIRECT = 'https://huggingface.co/'
+const HF_MIRROR_CN = 'https://hf-mirror.com/'
+
+/** 下载停顿看门狗：45s 无进度事件且仍在下载阶段 → 判定源卡死，切换下一源 */
+const STALL_MS = 45_000
+
+function hostLabel(host: string): string {
+  if (host === HF_MIRROR_CN) return 'hf-mirror.com'
+  if (host === HF_DIRECT) return 'huggingface.co'
+  return '本站代理'
+}
+
+/** 源连通性探测：config.json 小文件 + 6s 超时，被墙/不可达源快速失败而不是无限挂起 */
+async function probeHost(host: string, model: string, timeoutMs = 6000): Promise<boolean> {
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), timeoutMs)
+  try {
+    const r = await fetch(`${host}${model}/resolve/main/config.json`, { signal: ctl.signal, cache: 'no-store' })
+    return r.ok
+  } catch {
+    return false
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/**
+ * pipeline 加载（带停顿看门狗）：
+ * 下载阶段 STALL_MS 无任何进度事件且未全部完成 → 判定卡死，Promise.race 让调用方换源。
+ * transformers.js 未暴露 AbortController，被放弃的 pipeline 会在后台继续下载（可接受）；
+ * race 持有其 rejection 处理器，不会产生 unhandledrejection。
+ */
+function loadPipeWithWatchdog(
+  model: string,
+  device: 'webgpu' | 'wasm',
+  dtype: Record<string, string> | string,
+): Promise<AnyPipe> {
+  let lastProgress = Date.now()
+  let initiated = 0
+  let doneFiles = 0
+  let settled = false
+  const progress_callback = (p: Record<string, unknown>): void => {
+    lastProgress = Date.now()
+    if (p.status === 'initiate') initiated++
+    else if (p.status === 'done') doneFiles++
+    if (p.status === 'progress') {
+      post({
+        type: 'download',
+        file: String(p.file ?? ''),
+        progress: Number(p.progress ?? 0),
+        loaded: Number(p.loaded ?? 0),
+        total: Number(p.total ?? 0),
+      })
+    } else if (p.status === 'done') {
+      post({ type: 'downloadDone', file: String(p.file ?? '') })
+    }
+  }
+  const loading = (pipeline as any)('automatic-speech-recognition', model, {
+    device,
+    dtype,
+    progress_callback,
+  }).then(
+    (r: any) => {
+      settled = true
+      return r as AnyPipe
+    },
+    (e: unknown) => {
+      settled = true
+      throw e
+    },
+  )
+  const watchdog = new Promise<never>((_, reject) => {
+    let stopped = false
+    const tick = (): void => {
+      if (stopped || settled) return
+      if (Date.now() - lastProgress > STALL_MS && doneFiles < initiated) {
+        stopped = true
+        reject(new Error(`下载停顿超过 ${STALL_MS / 1000}s`))
+        return
+      }
+      setTimeout(tick, 5000)
+    }
+    setTimeout(tick, 5000)
+  })
+  return Promise.race([loading, watchdog]) as Promise<AnyPipe>
+}
 
 async function ensurePipe(opts: LoadOpts): Promise<{ pipe: AnyPipe; device: 'webgpu' | 'wasm' }> {
-  // 'mirror' = 走本站 /hf/ 代理（服务端转发 hf-mirror，无 CORS/指纹问题）；
-  // GitHub Pages 等纯静态托管没有该代理 → 404 后自动回退直连 huggingface.co
   const origin = (self as unknown as { location: { origin: string } }).location.origin
-  const host0 = opts.mirror === 'mirror' ? `${origin}/hf/` : HF_DIRECT
-  const hosts = host0 === HF_DIRECT ? [HF_DIRECT] : [host0, HF_DIRECT]
+  // 浏览器侧下载源回退链：
+  //  mirror：本站 /hf 代理（dev/preview/自托管）→ hf-mirror.com（大陆可直连）→ huggingface.co（国际兜底）
+  //  hf：huggingface.co → hf-mirror.com（大陆兜底）
+  // GitHub Pages 等纯静态托管没有 /hf 代理：探测 404 快速跳过，hf-mirror 直连顶上
+  const hosts0 =
+    opts.mirror === 'mirror'
+      ? [`${origin}/hf/`, HF_MIRROR_CN, HF_DIRECT]
+      : [HF_DIRECT, HF_MIRROR_CN]
+  const hosts = [...new Set(hosts0)]
 
   const attempts: { device: 'webgpu' | 'wasm'; dtype: any }[] = [
     { device: opts.device, dtype: opts.dtype },
     // 失败回退：webgpu→wasm q8 / wasm→q8
     { device: 'wasm', dtype: 'q8' },
   ]
+
+  // 热路径：pipe 已按某（host×device）组合加载 → 直接复用，跳过探测
+  for (const att of attempts) {
+    if (att.device === 'webgpu' && !(self as any).navigator?.gpu) continue
+    for (const host of hosts) {
+      const key = `${opts.model}|${att.device}|${JSON.stringify(att.dtype)}|${host}`
+      if (pipe && loadedKey === key) return { pipe: pipe!, device: att.device }
+    }
+  }
+
+  // 连通性探测：并发发起、按优先顺序取首个可用源（被墙源最多拖 6s 即被跳过）
+  post({ type: 'status', msg: '检查模型下载源…' })
+  const probes = hosts.map((h) => probeHost(h, opts.model))
+  let ordered = hosts // 全部探测失败按原顺序兜底（探测可能假阴性，如自定义模型 ID）
+  for (let i = 0; i < hosts.length; i++) {
+    if (await probes[i]) {
+      ordered = [hosts[i], ...hosts.slice(i + 1)]
+      break
+    }
+  }
+
   let lastErr: unknown
   for (const att of attempts) {
     if (att.device === 'webgpu' && !(self as any).navigator?.gpu) {
       lastErr = new Error('WebGPU 不可用')
       continue
     }
-    for (const host of hosts) {
+    for (let hi = 0; hi < ordered.length; hi++) {
+      const host = ordered[hi]
       const key = `${opts.model}|${att.device}|${JSON.stringify(att.dtype)}|${host}`
       if (pipe && loadedKey === key) return { pipe: pipe!, device: att.device }
       try {
         env.remoteHost = host
-        const viaMirror = host !== HF_DIRECT
-        post({ type: 'status', msg: `加载模型 ${opts.model}（${att.device}${viaMirror ? ' · 镜像' : ''}）…` })
-        pipe = (await (pipeline as any)('automatic-speech-recognition', opts.model, {
-          device: att.device,
-          dtype: att.dtype,
-          progress_callback: (p: Record<string, unknown>) => {
-            if (p.status === 'progress') {
-              post({
-                type: 'download',
-                file: String(p.file ?? ''),
-                progress: Number(p.progress ?? 0),
-                loaded: Number(p.loaded ?? 0),
-                total: Number(p.total ?? 0),
-              })
-            } else if (p.status === 'done') {
-              post({ type: 'downloadDone', file: String(p.file ?? '') })
-            }
-          },
-        })) as AnyPipe
+        post({ type: 'status', msg: `加载模型 ${opts.model}（${att.device} · ${hostLabel(host)}）…` })
+        pipe = await loadPipeWithWatchdog(opts.model, att.device, att.dtype)
         loadedKey = key
         post({ type: 'device', device: att.device })
         return { pipe: pipe!, device: att.device }
       } catch (e) {
         lastErr = e
         pipe = null
-        if (host !== HF_DIRECT) {
-          post({ type: 'status', msg: '镜像源不可用，改用 huggingface.co 直连重试…' })
+        const next = ordered[hi + 1]
+        if (next) {
+          const why = e instanceof Error ? e.message.slice(0, 80) : '未知错误'
+          post({ type: 'status', msg: `${hostLabel(host)} 加载失败（${why}），切换 ${hostLabel(next)}…` })
         }
       }
     }
   }
+  post({ type: 'status', msg: '所有模型下载源均不可用：本站代理 / hf-mirror.com / huggingface.co' })
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
 }
 
