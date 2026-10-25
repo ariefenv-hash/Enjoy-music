@@ -90,13 +90,25 @@ export class Playback {
     this.el.src = this.url
     this.el.load()
     await new Promise<void>((resolve) => {
-      const done = () => {
+      let timer = 0
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
         this.duration = this.el.duration || 0
         this.resync()
+        this.emit()
         resolve()
       }
-      this.el.addEventListener('loadedmetadata', done, { once: true })
-      setTimeout(resolve, 8000) // 兜底
+      this.el.addEventListener('loadedmetadata', finish, { once: true })
+      // 兜底：8s 内未拿到元数据也放行（duration=0 路径），并告警便于排查
+      timer = window.setTimeout(() => {
+        if (!settled) {
+          console.warn('[player] loadedmetadata 8s 未到达，按 duration=0 放行')
+          finish()
+        }
+      }, 8000)
     })
   }
 

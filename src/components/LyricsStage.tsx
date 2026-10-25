@@ -24,6 +24,7 @@ export function LyricsStage({ lines, getTime, playing, onSeekWord, onSeekLine, e
   const lineEls = useRef<(HTMLDivElement | null)[]>([])
   const interludeRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef(-1)
+  const wordRef = useRef(-2)
   const [activeIdx, setActiveIdx] = useState(-1)
 
   // 滚动定位
@@ -57,6 +58,7 @@ export function LyricsStage({ lines, getTime, playing, onSeekWord, onSeekLine, e
         })
       }
       activeRef.current = idx
+      wordRef.current = -2 // 行切换后强制重建字状态
       setActiveIdx(idx)
     }
 
@@ -74,33 +76,44 @@ export function LyricsStage({ lines, getTime, playing, onSeekWord, onSeekLine, e
           }
         }
         if (wi < 0 && t >= line.end) wi = words.length - 1
-        for (let i = 0; i < words.length; i++) {
-          const c = children[i] as HTMLElement | undefined
-          if (!c) continue
-          if (i < wi || (wi < 0 && t >= words[i].end)) {
-            c.classList.add('k-word--done')
-            c.classList.remove('k-word--active')
-            c.style.removeProperty('--p')
-          } else if (i === wi) {
-            c.classList.add('k-word--active')
-            c.classList.remove('k-word--done')
-            const w = words[i]
+        // 字状态类名只在 wi 变化时重写（避免每帧 O(words) 的 classList/style 无效写入）
+        if (wi !== wordRef.current) {
+          for (let i = 0; i < words.length; i++) {
+            const c = children[i] as HTMLElement | undefined
+            if (!c) continue
+            if (i < wi || (wi < 0 && t >= words[i].end)) {
+              c.classList.add('k-word--done')
+              c.classList.remove('k-word--active')
+              c.style.removeProperty('--p')
+            } else if (i === wi) {
+              c.classList.add('k-word--active')
+              c.classList.remove('k-word--done')
+            } else {
+              c.classList.remove('k-word--active', 'k-word--done')
+              c.style.removeProperty('--p')
+            }
+          }
+          wordRef.current = wi
+        }
+        // 活跃词进度每帧直写（唯一必需的逐帧 DOM 写入）
+        if (wi >= 0) {
+          const c = children[wi] as HTMLElement | undefined
+          if (c) {
+            const w = words[wi]
             const p = Math.min(1, Math.max(0, (t - w.start) / Math.max(0.05, w.end - w.start)))
             c.style.setProperty('--p', p.toFixed(4))
-          } else {
-            c.classList.remove('k-word--active', 'k-word--done')
-            c.style.removeProperty('--p')
           }
         }
       }
-      // 间奏倒计时
+      // 间奏倒计时（同值跳过，避免每帧 textContent 变更）
       const next = lines[idx + 1]
       const gap = next ? next.start - t : 0
       const il = interludeRef.current
       if (il) {
         if (next && gap > 4.5) {
+          const txt = `间奏 · ${Math.ceil(gap)}s`
           il.style.display = 'flex'
-          il.textContent = `间奏 · ${Math.ceil(gap)}s`
+          if (il.textContent !== txt) il.textContent = txt
         } else {
           il.style.display = 'none'
         }

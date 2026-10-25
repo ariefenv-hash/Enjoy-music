@@ -1,19 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { subscribeTick } from '../core/player'
 
-/** 每帧获取播放时间（驱动歌词渲染） */
-export function usePlayTime(getTime: () => number, active: boolean): number {
-  const [t, setT] = useState(0)
-  const getRef = useRef(getTime)
-  getRef.current = getTime
-  useEffect(() => {
-    if (!active) return
-    return subscribeTick(() => setT(getRef.current()))
-  }, [active])
-  return t
-}
-
-/** 状态层：每帧渲染时使用（歌词舞台用直写 DOM 方式，不经 React 状态） */
+/**
+ * rAF 帧回调订阅（驱动歌词渲染/进度条直写 DOM）。
+ *
+ * 注意：不要在这里做 React setState——每帧 setState 会造成 60fps 全量重渲染。
+ * 需要时间数值时直接在回调里读 getTime 并直写 DOM/ref。
+ */
 export function useRafFrame(cb: () => void, active = true): void {
   const ref = useRef(cb)
   ref.current = cb

@@ -23,11 +23,23 @@ export function PlayerBar({ playback, title, lineStarts, playing, onDownloadLrc,
   const sliderRef = useRef<HTMLDivElement>(null)
   const volFillRef = useRef<HTMLDivElement>(null)
   const volHandleRef = useRef<HTMLDivElement>(null)
+  const volSliderRef = useRef<HTMLDivElement>(null)
   const timeRef = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
   const volDragging = useRef(false)
   const [rateIdx, setRateIdx] = useState(1)
-  const [vol, setVol] = useState(playback.volume())
+
+  // 音量 UI 直写（不经 React 状态，拖动零重渲染）
+  const writeVol = (v: number) => {
+    const pct = `${(Math.min(1, Math.max(0, v)) * 100).toFixed(2)}%`
+    if (volFillRef.current) volFillRef.current.style.width = pct
+    if (volHandleRef.current) volHandleRef.current.style.left = pct
+  }
+
+  // 挂载时同步一次音量 UI
+  useEffect(() => {
+    writeVol(playback.volume())
+  }, [playback])
 
   // 每帧更新进度滑块与时间（直写 DOM）
   useRafFrame(() => {
@@ -67,6 +79,44 @@ export function PlayerBar({ playback, title, lineStarts, playing, onDownloadLrc,
     }
   }
 
+  // 键盘快捷键：空格播放/暂停 · ←→ 句跳 · ↑↓ 音量
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault()
+          playback.toggle()
+          break
+        case 'ArrowLeft':
+          e.preventDefault()
+          jumpLine(-1)
+          break
+        case 'ArrowRight':
+          e.preventDefault()
+          jumpLine(1)
+          break
+        case 'ArrowUp': {
+          e.preventDefault()
+          const v = Math.min(1, playback.volume() + 0.05)
+          playback.setVolume(v)
+          writeVol(v)
+          break
+        }
+        case 'ArrowDown': {
+          e.preventDefault()
+          const v = Math.max(0, playback.volume() - 0.05)
+          playback.setVolume(v)
+          writeVol(v)
+          break
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
   return (
     <div className="playerbar">
       <div className="playerbar__times t-mono" ref={timeRef}>
@@ -102,22 +152,23 @@ export function PlayerBar({ playback, title, lineStarts, playing, onDownloadLrc,
             <div className="m-slider__handle" ref={handleRef} style={{ left: '0%' }} />
           </div>
         </div>
-        <div className="m-slider playerbar__vol" title="音量">
+        <div className="m-slider playerbar__vol" title="音量" ref={volSliderRef}>
           <div
             className="m-slider__track"
             onPointerDown={(e) => {
               volDragging.current = true
-              const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect()
+              ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+              const rect = (volSliderRef.current ?? (e.currentTarget.parentElement as HTMLElement)).getBoundingClientRect()
               const v = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
               playback.setVolume(v)
-              setVol(v)
+              writeVol(v)
             }}
             onPointerMove={(e) => {
               if (!volDragging.current) return
-              const rect = (e.currentTarget.parentElement as HTMLElement).getBoundingClientRect()
+              const rect = (volSliderRef.current ?? (e.currentTarget.parentElement as HTMLElement)).getBoundingClientRect()
               const v = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
               playback.setVolume(v)
-              setVol(v)
+              writeVol(v)
             }}
             onPointerUp={() => {
               volDragging.current = false
@@ -126,12 +177,12 @@ export function PlayerBar({ playback, title, lineStarts, playing, onDownloadLrc,
             <div
               className="m-slider__fill"
               ref={volFillRef}
-              style={{ width: `${vol * 100}%`, background: 'var(--md-onSurfaceVariant)' }}
+              style={{ width: '0%', background: 'var(--md-onSurfaceVariant)' }}
             />
             <div
               className="m-slider__handle"
               ref={volHandleRef}
-              style={{ left: `${vol * 100}%`, background: 'var(--md-onSurfaceVariant)' }}
+              style={{ left: '0%', background: 'var(--md-onSurfaceVariant)' }}
             />
           </div>
         </div>
